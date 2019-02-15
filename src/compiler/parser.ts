@@ -1093,6 +1093,10 @@ namespace ts {
             return currentToken = scanner.reScanTemplateToken();
         }
 
+        function reScanLessThanToken(): SyntaxKind {
+            return currentToken = scanner.reScanLessThanToken();
+        }
+
         function scanJsxIdentifier(): SyntaxKind {
             return currentToken = scanner.scanJsxIdentifier();
         }
@@ -1717,6 +1721,8 @@ namespace ts {
         }
 
         function currentNode(parsingContext: ParsingContext): Node | undefined {
+            // If we don't have a cursor or the parsing context isn't reusable, there's nothing to reuse.
+            //
             // If there is an outstanding parse error that we've encountered, but not attached to
             // some node, then we cannot get a node from the old source tree.  This is because we
             // want to mark the next node we encounter as being unusable.
@@ -1724,30 +1730,17 @@ namespace ts {
             // Note: This may be too conservative.  Perhaps we could reuse the node and set the bit
             // on it (or its leftmost child) as having the error.  For now though, being conservative
             // is nice and likely won't ever affect perf.
-            if (parseErrorBeforeNextFinishedNode) {
-                return undefined;
-            }
-
-            if (!syntaxCursor) {
-                // if we don't have a cursor, we could never return a node from the old tree.
+            if (!syntaxCursor || !isReusableParsingContext(parsingContext) || parseErrorBeforeNextFinishedNode) {
                 return undefined;
             }
 
             const node = syntaxCursor.currentNode(scanner.getStartPos());
 
             // Can't reuse a missing node.
-            if (nodeIsMissing(node)) {
-                return undefined;
-            }
-
             // Can't reuse a node that intersected the change range.
-            if (node.intersectsChange) {
-                return undefined;
-            }
-
             // Can't reuse a node that contains a parse error.  This is necessary so that we
             // produce the same set of errors again.
-            if (containsParseError(node)) {
+            if (nodeIsMissing(node) || node.intersectsChange || containsParseError(node)) {
                 return undefined;
             }
 
@@ -1788,6 +1781,23 @@ namespace ts {
             return node;
         }
 
+        function isReusableParsingContext(parsingContext: ParsingContext): boolean {
+            switch (parsingContext) {
+                case ParsingContext.ClassMembers:
+                case ParsingContext.SwitchClauses:
+                case ParsingContext.SourceElements:
+                case ParsingContext.BlockStatements:
+                case ParsingContext.SwitchClauseStatements:
+                case ParsingContext.EnumMembers:
+                case ParsingContext.TypeMembers:
+                case ParsingContext.VariableDeclarations:
+                case ParsingContext.JSDocParameters:
+                case ParsingContext.Parameters:
+                    return true;
+            }
+            return false;
+        }
+
         function canReuseNode(node: Node, parsingContext: ParsingContext): boolean {
             switch (parsingContext) {
                 case ParsingContext.ClassMembers:
@@ -1814,25 +1824,23 @@ namespace ts {
                 case ParsingContext.Parameters:
                     return isReusableParameter(node);
 
-                case ParsingContext.RestProperties:
-                    return false;
-
                 // Any other lists we do not care about reusing nodes in.  But feel free to add if
                 // you can do so safely.  Danger areas involve nodes that may involve speculative
                 // parsing.  If speculative parsing is involved with the node, then the range the
                 // parser reached while looking ahead might be in the edited range (see the example
                 // in canReuseVariableDeclaratorNode for a good case of this).
-                case ParsingContext.HeritageClauses:
+
+                // case ParsingContext.HeritageClauses:
                 // This would probably be safe to reuse.  There is no speculative parsing with
                 // heritage clauses.
 
-                case ParsingContext.TypeParameters:
+                // case ParsingContext.TypeParameters:
                 // This would probably be safe to reuse.  There is no speculative parsing with
                 // type parameters.  Note that that's because type *parameters* only occur in
                 // unambiguous *type* contexts.  While type *arguments* occur in very ambiguous
                 // *expression* contexts.
 
-                case ParsingContext.TupleElementTypes:
+                // case ParsingContext.TupleElementTypes:
                 // This would probably be safe to reuse.  There is no speculative parsing with
                 // tuple types.
 
@@ -1841,28 +1849,28 @@ namespace ts {
                 // produced from speculative parsing a < as a type argument list), we only have
                 // the types because speculative parsing succeeded.  Thus, the lookahead never
                 // went past the end of the list and rewound.
-                case ParsingContext.TypeArguments:
+                // case ParsingContext.TypeArguments:
 
                 // Note: these are almost certainly not safe to ever reuse.  Expressions commonly
                 // need a large amount of lookahead, and we should not reuse them as they may
                 // have actually intersected the edit.
-                case ParsingContext.ArgumentExpressions:
+                // case ParsingContext.ArgumentExpressions:
 
                 // This is not safe to reuse for the same reason as the 'AssignmentExpression'
                 // cases.  i.e. a property assignment may end with an expression, and thus might
                 // have lookahead far beyond it's old node.
-                case ParsingContext.ObjectLiteralMembers:
+                // case ParsingContext.ObjectLiteralMembers:
 
                 // This is probably not safe to reuse.  There can be speculative parsing with
                 // type names in a heritage clause.  There can be generic names in the type
                 // name list, and there can be left hand side expressions (which can have type
                 // arguments.)
-                case ParsingContext.HeritageClauseElement:
+                // case ParsingContext.HeritageClauseElement:
 
                 // Perhaps safe to reuse, but it's unlikely we'd see more than a dozen attributes
                 // on any given element. Same for children.
-                case ParsingContext.JsxAttributes:
-                case ParsingContext.JsxChildren:
+                // case ParsingContext.JsxAttributes:
+                // case ParsingContext.JsxChildren:
 
             }
 
@@ -2272,7 +2280,7 @@ namespace ts {
         function parseTypeReference(): TypeReferenceNode {
             const node = <TypeReferenceNode>createNode(SyntaxKind.TypeReference);
             node.typeName = parseEntityName(/*allowReservedWords*/ true, Diagnostics.Type_expected);
-            if (!scanner.hasPrecedingLineBreak() && token() === SyntaxKind.LessThanToken) {
+            if (!scanner.hasPrecedingLineBreak() && reScanLessThanToken() === SyntaxKind.LessThanToken) {
                 node.typeArguments = parseBracketedList(ParsingContext.TypeArguments, parseType, SyntaxKind.LessThanToken, SyntaxKind.GreaterThanToken);
             }
             return finishNode(node);
@@ -2958,6 +2966,7 @@ namespace ts {
                 case SyntaxKind.NumberKeyword:
                 case SyntaxKind.BigIntKeyword:
                 case SyntaxKind.BooleanKeyword:
+                case SyntaxKind.ReadonlyKeyword:
                 case SyntaxKind.SymbolKeyword:
                 case SyntaxKind.UniqueKeyword:
                 case SyntaxKind.VoidKeyword:
@@ -3047,7 +3056,7 @@ namespace ts {
             return finishNode(postfix);
         }
 
-        function parseTypeOperator(operator: SyntaxKind.KeyOfKeyword | SyntaxKind.UniqueKeyword) {
+        function parseTypeOperator(operator: SyntaxKind.KeyOfKeyword | SyntaxKind.UniqueKeyword | SyntaxKind.ReadonlyKeyword) {
             const node = <TypeOperatorNode>createNode(SyntaxKind.TypeOperator);
             parseExpected(operator);
             node.operator = operator;
@@ -3069,6 +3078,7 @@ namespace ts {
             switch (operator) {
                 case SyntaxKind.KeyOfKeyword:
                 case SyntaxKind.UniqueKeyword:
+                case SyntaxKind.ReadonlyKeyword:
                     return parseTypeOperator(operator);
                 case SyntaxKind.InferKeyword:
                     return parseInferType();
@@ -4519,7 +4529,8 @@ namespace ts {
         function parseCallExpressionRest(expression: LeftHandSideExpression): LeftHandSideExpression {
             while (true) {
                 expression = parseMemberExpressionRest(expression);
-                if (token() === SyntaxKind.LessThanToken) {
+                // handle 'foo<<T>()'
+                if (token() === SyntaxKind.LessThanToken || token() === SyntaxKind.LessThanLessThanToken) {
                     // See if this is the start of a generic invocation.  If so, consume it and
                     // keep checking for postfix expressions.  Otherwise, it's just a '<' that's
                     // part of an arithmetic expression.  Break out so we consume it higher in the
@@ -4561,9 +4572,10 @@ namespace ts {
         }
 
         function parseTypeArgumentsInExpression() {
-            if (!parseOptional(SyntaxKind.LessThanToken)) {
+            if (reScanLessThanToken() !== SyntaxKind.LessThanToken) {
                 return undefined;
             }
+            nextToken();
 
             const typeArguments = parseDelimitedList(ParsingContext.TypeArguments, parseType);
             if (!parseExpected(SyntaxKind.GreaterThanToken)) {
@@ -7770,17 +7782,18 @@ namespace ts {
                     const libReferenceDirectives = context.libReferenceDirectives;
                     forEach(toArray(entryOrList), (arg: PragmaPseudoMap["reference"]) => {
                         // TODO: GH#18217
+                        const { types, lib, path } = arg!.arguments;
                         if (arg!.arguments["no-default-lib"]) {
                             context.hasNoDefaultLib = true;
                         }
-                        else if (arg!.arguments.types) {
-                            typeReferenceDirectives.push({ pos: arg!.arguments.types!.pos, end: arg!.arguments.types!.end, fileName: arg!.arguments.types!.value });
+                        else if (types) {
+                            typeReferenceDirectives.push({ pos: types.pos, end: types.end, fileName: types.value });
                         }
-                        else if (arg!.arguments.lib) {
-                            libReferenceDirectives.push({ pos: arg!.arguments.lib!.pos, end: arg!.arguments.lib!.end, fileName: arg!.arguments.lib!.value });
+                        else if (lib) {
+                            libReferenceDirectives.push({ pos: lib.pos, end: lib.end, fileName: lib.value });
                         }
-                        else if (arg!.arguments.path) {
-                            referencedFiles.push({ pos: arg!.arguments.path!.pos, end: arg!.arguments.path!.end, fileName: arg!.arguments.path!.value });
+                        else if (path) {
+                            referencedFiles.push({ pos: path.pos, end: path.end, fileName: path.value });
                         }
                         else {
                             reportDiagnostic(arg!.range.pos, arg!.range.end - arg!.range.pos, Diagnostics.Invalid_reference_directive_syntax);

@@ -1,4 +1,3 @@
-/** Non-internal stuff goes here */
 namespace ts {
     export function isExternalModuleNameRelative(moduleName: string): boolean {
         // TypeScript 1.0 spec (April 2014): 11.2.1
@@ -779,7 +778,8 @@ namespace ts {
             case SyntaxKind.NoSubstitutionTemplateLiteral:
                 return escapeLeadingUnderscores(name.text);
             case SyntaxKind.ComputedPropertyName:
-                return isStringOrNumericLiteralLike(name.expression) ? escapeLeadingUnderscores(name.expression.text) : undefined!; // TODO: GH#18217 Almost all uses of this assume the result to be defined!
+                if (isStringOrNumericLiteralLike(name.expression)) return escapeLeadingUnderscores(name.expression.text);
+                return Debug.fail("Text of property name cannot be read from non-literal-valued ComputedPropertyNames");
             default:
                 return Debug.assertNever(name);
         }
@@ -889,7 +889,7 @@ namespace ts {
         }
 
         const isMissing = nodeIsMissing(errorNode);
-        const pos = isMissing
+        const pos = isMissing || isJsxText(node)
             ? errorNode.pos
             : skipTrivia(sourceFile.text, errorNode.pos);
 
@@ -2122,7 +2122,7 @@ namespace ts {
             : undefined;
     }
 
-    function getSingleInitializerOfVariableStatementOrPropertyDeclaration(node: Node): Expression | undefined {
+    export function getSingleInitializerOfVariableStatementOrPropertyDeclaration(node: Node): Expression | undefined {
         switch (node.kind) {
             case SyntaxKind.VariableStatement:
                 const v = getSingleVariableOfVariableStatement(node);
@@ -2514,14 +2514,15 @@ namespace ts {
     }
 
     export function getEffectiveBaseTypeNode(node: ClassLikeDeclaration | InterfaceDeclaration) {
-        if (isInJSFile(node)) {
+        const baseType = getClassExtendsHeritageElement(node);
+        if (baseType && isInJSFile(node)) {
             // Prefer an @augments tag because it may have type parameters.
             const tag = getJSDocAugmentsTag(node);
             if (tag) {
                 return tag.class;
             }
         }
-        return getClassExtendsHeritageElement(node);
+        return baseType;
     }
 
     export function getClassExtendsHeritageElement(node: ClassLikeDeclaration | InterfaceDeclaration) {
@@ -3403,7 +3404,7 @@ namespace ts {
         return combinePaths(newDirPath, sourceFilePath);
     }
 
-    export function writeFile(host: EmitHost, diagnostics: DiagnosticCollection, fileName: string, data: string, writeByteOrderMark: boolean, sourceFiles?: ReadonlyArray<SourceFile>) {
+    export function writeFile(host: { writeFile: WriteFileCallback; }, diagnostics: DiagnosticCollection, fileName: string, data: string, writeByteOrderMark: boolean, sourceFiles?: ReadonlyArray<SourceFile>) {
         host.writeFile(fileName, data, writeByteOrderMark, hostErrorMessage => {
             diagnostics.add(createCompilerDiagnostic(Diagnostics.Could_not_write_file_0_Colon_1, fileName, hostErrorMessage));
         }, sourceFiles);
@@ -3791,8 +3792,8 @@ namespace ts {
     }
 
     export function getModifierFlags(node: Node): ModifierFlags {
-        if (node.modifierFlagsCache! & ModifierFlags.HasComputedFlags) {
-            return node.modifierFlagsCache! & ~ModifierFlags.HasComputedFlags;
+        if (node.modifierFlagsCache & ModifierFlags.HasComputedFlags) {
+            return node.modifierFlagsCache & ~ModifierFlags.HasComputedFlags;
         }
 
         const flags = getModifierFlagsNoCache(node);
@@ -4514,7 +4515,7 @@ namespace ts {
     }
 
     export function getObjectFlags(type: Type): ObjectFlags {
-        return type.flags & TypeFlags.Object ? (<ObjectType>type).objectFlags : 0;
+        return type.flags & TypeFlags.ObjectFlagsType ? (<ObjectFlagsType>type).objectFlags : 0;
     }
 
     export function typeHasCallOrConstructSignatures(type: Type, checker: TypeChecker) {
@@ -4591,6 +4592,10 @@ namespace ts {
             || kind === SyntaxKind.JSDocFunctionType
             || kind === SyntaxKind.JSDocVariadicType;
     }
+
+    export function isAccessExpression(node: Node): node is AccessExpression {
+        return node.kind === SyntaxKind.PropertyAccessExpression || node.kind === SyntaxKind.ElementAccessExpression;
+    }
 }
 
 namespace ts {
@@ -4598,6 +4603,8 @@ namespace ts {
         switch (options.target) {
             case ScriptTarget.ESNext:
                 return "lib.esnext.full.d.ts";
+            case ScriptTarget.ES2019:
+                return "lib.es2019.full.d.ts";
             case ScriptTarget.ES2018:
                 return "lib.es2018.full.d.ts";
             case ScriptTarget.ES2017:
@@ -5601,6 +5608,11 @@ namespace ts {
 
     export function isTypeAssertion(node: Node): node is TypeAssertion {
         return node.kind === SyntaxKind.TypeAssertionExpression;
+    }
+
+    export function isConstTypeReference(node: Node) {
+        return isTypeReferenceNode(node) && isIdentifier(node.typeName) &&
+            node.typeName.escapedText === "const" && !node.typeArguments;
     }
 
     export function isParenthesizedExpression(node: Node): node is ParenthesizedExpression {
@@ -7021,6 +7033,7 @@ namespace ts {
         };
     }
 
+    export function formatMessage(_dummy: any, message: DiagnosticMessage, ...args: (string | number | undefined)[]): string;
     export function formatMessage(_dummy: any, message: DiagnosticMessage): string {
         let text = getLocaleSpecificMessage(message);
 
@@ -7688,16 +7701,38 @@ namespace ts {
         return path;
     }
 
+    // check path for these segments: '', '.'. '..'
+    const relativePathSegmentRegExp = /(^|\/)\.{0,2}($|\/)/;
+
     function comparePathsWorker(a: string, b: string, componentComparer: (a: string, b: string) => Comparison) {
         if (a === b) return Comparison.EqualTo;
         if (a === undefined) return Comparison.LessThan;
         if (b === undefined) return Comparison.GreaterThan;
+
+        // NOTE: Performance optimization - shortcut if the root segments differ as there would be no
+        //       need to perform path reduction.
+        const aRoot = a.substring(0, getRootLength(a));
+        const bRoot = b.substring(0, getRootLength(b));
+        const result = compareStringsCaseInsensitive(aRoot, bRoot);
+        if (result !== Comparison.EqualTo) {
+            return result;
+        }
+
+        // NOTE: Performance optimization - shortcut if there are no relative path segments in
+        //       the non-root portion of the path
+        const aRest = a.substring(aRoot.length);
+        const bRest = b.substring(bRoot.length);
+        if (!relativePathSegmentRegExp.test(aRest) && !relativePathSegmentRegExp.test(bRest)) {
+            return componentComparer(aRest, bRest);
+        }
+
+        // The path contains a relative path segment. Normalize the paths and perform a slower component
+        // by component comparison.
         const aComponents = reducePathComponents(getPathComponents(a));
         const bComponents = reducePathComponents(getPathComponents(b));
         const sharedLength = Math.min(aComponents.length, bComponents.length);
-        for (let i = 0; i < sharedLength; i++) {
-            const stringComparer = i === 0 ? compareStringsCaseInsensitive : componentComparer;
-            const result = stringComparer(aComponents[i], bComponents[i]);
+        for (let i = 1; i < sharedLength; i++) {
+            const result = componentComparer(aComponents[i], bComponents[i]);
             if (result !== Comparison.EqualTo) {
                 return result;
             }
