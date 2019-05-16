@@ -1664,16 +1664,25 @@ namespace ts {
         return ensureScriptKind(fileName, host && host.getScriptKind && host.getScriptKind(fileName));
     }
 
-    export function getSymbolTarget(symbol: Symbol): Symbol {
+    export function getSymbolTarget(symbol: Symbol, checker: TypeChecker): Symbol {
         let next: Symbol = symbol;
-        while (isTransientSymbol(next) && next.target) {
-           next = next.target;
+        while (isAliasSymbol(next) || (isTransientSymbol(next) && next.target)) {
+            if (isTransientSymbol(next) && next.target) {
+                next = next.target;
+            }
+            else {
+                next = skipAlias(next, checker);
+            }
         }
         return next;
     }
 
     function isTransientSymbol(symbol: Symbol): symbol is TransientSymbol {
         return (symbol.flags & SymbolFlags.Transient) !== 0;
+    }
+
+    function isAliasSymbol(symbol: Symbol): boolean {
+        return (symbol.flags & SymbolFlags.Alias) !== 0;
     }
 
     export function getUniqueSymbolId(symbol: Symbol, checker: TypeChecker) {
@@ -1708,7 +1717,19 @@ namespace ts {
 
     export function getSynthesizedDeepCloneWithRenames<T extends Node>(node: T, includeTrivia = true, renameMap?: Map<Identifier>, checker?: TypeChecker, callback?: (originalNode: Node, clone: Node) => any): T {
         let clone;
-        if (isIdentifier(node) && renameMap && checker) {
+        if (renameMap && checker && isBindingElement(node) && isIdentifier(node.name) && isObjectBindingPattern(node.parent)) {
+            const symbol = checker.getSymbolAtLocation(node.name);
+            const renameInfo = symbol && renameMap.get(String(getSymbolId(symbol)));
+
+            if (renameInfo && renameInfo.text !== (node.name || node.propertyName).getText()) {
+                clone = createBindingElement(
+                    node.dotDotDotToken,
+                    node.propertyName || node.name,
+                    renameInfo,
+                    node.initializer);
+            }
+        }
+        else if (renameMap && checker && isIdentifier(node)) {
             const symbol = checker.getSymbolAtLocation(node);
             const renameInfo = symbol && renameMap.get(String(getSymbolId(symbol)));
 

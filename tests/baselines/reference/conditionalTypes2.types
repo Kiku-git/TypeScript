@@ -130,14 +130,14 @@ function f12(x: string | (() => string) | undefined) {
 >x : string | (() => string) | undefined
 
     const f = getFunction(x);  // () => string
->f : Function & (() => string)
->getFunction(x) : Function & (() => string)
+>f : () => string
+>getFunction(x) : () => string
 >getFunction : <T>(item: T) => Extract<T, Function>
 >x : string | (() => string) | undefined
 
     f();
 >f() : string
->f : Function & (() => string)
+>f : () => string
 }
 
 type Foo = { foo: string };
@@ -430,4 +430,19 @@ type PCCA = ProductComplementComplement['a'];
 
 type PCCB = ProductComplementComplement['b'];
 >PCCB : Product<"b", 1>
+
+// Repro from #31326
+
+type Hmm<T, U extends T> = U extends T ? { [K in keyof U]: number } : never;
+>Hmm : Hmm<T, U>
+
+type What = Hmm<{}, { a: string }>
+>What : { a: number; }
+>a : string
+
+const w: What = { a: 4 };
+>w : { a: number; }
+>{ a: 4 } : { a: number; }
+>a : number
+>4 : 4
 

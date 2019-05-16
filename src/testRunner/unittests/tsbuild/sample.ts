@@ -279,7 +279,6 @@ namespace ts {
                     [Diagnostics.Project_0_is_up_to_date_because_newest_input_1_is_older_than_oldest_output_2, "src/logic/tsconfig.json", "src/logic/index.ts", "src/logic/index.js"],
                     [Diagnostics.Project_0_is_out_of_date_because_oldest_output_1_is_older_than_newest_input_2, "src/tests/tsconfig.json", "src/tests/index.js", "src/tests/tsconfig.json"],
                     [Diagnostics.Building_project_0, "/src/tests/tsconfig.json"],
-                    [Diagnostics.Updating_unchanged_output_timestamps_of_project_0, "/src/tests/tsconfig.json"]
                 );
             });
 
@@ -309,8 +308,7 @@ namespace ts {
                     [Diagnostics.Project_0_is_up_to_date_because_newest_input_1_is_older_than_oldest_output_2, "src/core/tsconfig.json", "src/core/anotherModule.ts", "src/core/anotherModule.js"],
                     [Diagnostics.Project_0_is_up_to_date_because_newest_input_1_is_older_than_oldest_output_2, "src/logic/tsconfig.json", "src/logic/index.ts", "src/logic/index.js"],
                     [Diagnostics.Project_0_is_out_of_date_because_oldest_output_1_is_older_than_newest_input_2, "src/tests/tsconfig.json", "src/tests/index.js", "src/tests/tsconfig.base.json"],
-                    [Diagnostics.Building_project_0, "/src/tests/tsconfig.json"],
-                    [Diagnostics.Updating_unchanged_output_timestamps_of_project_0, "/src/tests/tsconfig.json"]
+                    [Diagnostics.Building_project_0, "/src/tests/tsconfig.json"]
                 );
             });
         });
@@ -399,14 +397,14 @@ export class cNew {}`);
                 const builder = createSolutionBuilder(host, ["/src/tests"], { listFiles: true });
                 builder.buildAllProjects();
                 assert.deepEqual(host.traces, [
-                    ...getLibs(),
+                    "/lib/lib.d.ts",
                     "/src/core/anotherModule.ts",
                     "/src/core/index.ts",
                     "/src/core/some_decl.d.ts",
-                    ...getLibs(),
+                    "/lib/lib.d.ts",
                     ...getCoreOutputs(),
                     "/src/logic/index.ts",
-                    ...getLibs(),
+                    "/lib/lib.d.ts",
                     ...getCoreOutputs(),
                     "/src/logic/index.d.ts",
                     "/src/tests/index.ts"
@@ -427,14 +425,14 @@ export class cNew {}`);
                 builder.buildAllProjects();
                 assert.deepEqual(host.traces, [
                     "TSFILE: /src/core/anotherModule.js",
-                    "TSFILE: /src/core/anotherModule.d.ts",
                     "TSFILE: /src/core/anotherModule.d.ts.map",
+                    "TSFILE: /src/core/anotherModule.d.ts",
                     "TSFILE: /src/core/index.js",
-                    "TSFILE: /src/core/index.d.ts",
                     "TSFILE: /src/core/index.d.ts.map",
+                    "TSFILE: /src/core/index.d.ts",
                     "TSFILE: /src/core/tsconfig.tsbuildinfo",
-                    "TSFILE: /src/logic/index.js",
                     "TSFILE: /src/logic/index.js.map",
+                    "TSFILE: /src/logic/index.js",
                     "TSFILE: /src/logic/index.d.ts",
                     "TSFILE: /src/logic/tsconfig.tsbuildinfo",
                     "TSFILE: /src/tests/index.js",
@@ -719,6 +717,97 @@ class someClass { }`),
                     "/src/tests/index.d.ts",
                     "/src/tests/tsconfig.tsbuildinfo",
                 ]
+            });
+
+            verifyTsbuildOutput({
+                scenario: "when declaration option changes",
+                projFs: () => projFs,
+                time,
+                tick,
+                proj: "sample1",
+                rootNames: ["/src/core"],
+                expectedMapFileNames: emptyArray,
+                lastProjectOutputJs: "/src/core/index.js",
+                initialBuild: {
+                    modifyFs: fs => fs.writeFileSync("/src/core/tsconfig.json", `{
+    "compilerOptions": {
+        "incremental": true,
+        "skipDefaultLibCheck": true
+    }
+}`),
+                    expectedDiagnostics: [
+                        getExpectedDiagnosticForProjectsInBuild("src/core/tsconfig.json"),
+                        [Diagnostics.Project_0_is_out_of_date_because_output_file_1_does_not_exist, "src/core/tsconfig.json", "src/core/anotherModule.js"],
+                        [Diagnostics.Building_project_0, "/src/core/tsconfig.json"],
+                    ]
+                },
+                incrementalDtsChangedBuild: {
+                    modifyFs: fs => replaceText(fs, "/src/core/tsconfig.json", `"incremental": true,`, `"incremental": true, "declaration": true,`),
+                    expectedDiagnostics: [
+                        getExpectedDiagnosticForProjectsInBuild("src/core/tsconfig.json"),
+                        [Diagnostics.Project_0_is_out_of_date_because_output_file_1_does_not_exist, "src/core/tsconfig.json", "src/core/anotherModule.d.ts"],
+                        [Diagnostics.Building_project_0, "/src/core/tsconfig.json"]
+                    ]
+                },
+                outputFiles: [
+                    "/src/core/anotherModule.js",
+                    "/src/core/anotherModule.d.ts",
+                    "/src/core/index.js",
+                    "/src/core/index.d.ts",
+                    "/src/core/tsconfig.tsbuildinfo",
+                ],
+                baselineOnly: true,
+                verifyDiagnostics: true
+            });
+
+            verifyTsbuildOutput({
+                scenario: "when target option changes",
+                projFs: () => projFs,
+                time,
+                tick,
+                proj: "sample1",
+                rootNames: ["/src/core"],
+                expectedMapFileNames: emptyArray,
+                lastProjectOutputJs: "/src/core/index.js",
+                initialBuild: {
+                    modifyFs: fs => {
+                        fs.writeFileSync("/lib/lib.esnext.full.d.ts", `/// <reference no-default-lib="true"/>
+/// <reference lib="esnext" />`);
+                        fs.writeFileSync("/lib/lib.esnext.d.ts", libContent);
+                        fs.writeFileSync("/lib/lib.d.ts", `/// <reference no-default-lib="true"/>
+/// <reference lib="esnext" />`);
+                        fs.writeFileSync("/src/core/tsconfig.json", `{
+    "compilerOptions": {
+        "incremental": true,
+"listFiles": true,
+"listEmittedFiles": true,
+        "target": "esnext",
+    }
+}`);
+                            },
+                    expectedDiagnostics: [
+                        getExpectedDiagnosticForProjectsInBuild("src/core/tsconfig.json"),
+                        [Diagnostics.Project_0_is_out_of_date_because_output_file_1_does_not_exist, "src/core/tsconfig.json", "src/core/anotherModule.js"],
+                        [Diagnostics.Building_project_0, "/src/core/tsconfig.json"],
+                    ]
+                },
+                incrementalDtsChangedBuild: {
+                    modifyFs: fs => replaceText(fs, "/src/core/tsconfig.json", "esnext", "es5"),
+                    expectedDiagnostics: [
+                        getExpectedDiagnosticForProjectsInBuild("src/core/tsconfig.json"),
+                        [Diagnostics.Project_0_is_out_of_date_because_oldest_output_1_is_older_than_newest_input_2, "src/core/tsconfig.json", "src/core/anotherModule.js", "src/core/tsconfig.json"],
+                        [Diagnostics.Building_project_0, "/src/core/tsconfig.json"]
+                    ]
+                },
+                outputFiles: [
+                    "/src/core/anotherModule.js",
+                    "/src/core/anotherModule.d.ts",
+                    "/src/core/index.js",
+                    "/src/core/index.d.ts",
+                    "/src/core/tsconfig.tsbuildinfo",
+                ],
+                baselineOnly: true,
+                verifyDiagnostics: true
             });
         });
     });

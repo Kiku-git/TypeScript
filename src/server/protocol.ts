@@ -1392,6 +1392,9 @@ namespace ts.server.protocol {
         arguments: ConfigurePluginRequestArguments;
     }
 
+    export interface ConfigurePluginResponse extends Response {
+    }
+
     /**
      *  Information found in an "open" request.
      */
@@ -3043,6 +3046,9 @@ namespace ts.server.protocol {
         ES2015 = "ES2015",
         ES2016 = "ES2016",
         ES2017 = "ES2017",
+        ES2018 = "ES2018",
+        ES2019 = "ES2019",
+        ES2020 = "ES2020",
         ESNext = "ESNext"
     }
 }
